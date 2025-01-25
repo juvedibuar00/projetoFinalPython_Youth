@@ -1,0 +1,381 @@
+# -------------------------------------------------------------------------
+# app.py
+
+from flask import Flask
+from src.database import db
+from src.routes.person_routes import person_bp
+from src.routes.product_routes import product_bp
+from src.routes.comment_routes import comment_bp
+from src.routes.auth_routes import auth_bp
+
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://username:password@localhost/database_name'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECRET_KEY'] = 'your_secret_key'
+
+db.init_app(app)
+
+# Registrar Blueprints
+app.register_blueprint(person_bp, url_prefix='/api/person')
+app.register_blueprint(product_bp, url_prefix='/api/product')
+app.register_blueprint(comment_bp, url_prefix='/api/comment')
+app.register_blueprint(auth_bp, url_prefix='/api/auth')
+
+if __name__ == '__main__':
+    app.run(debug=True)
+
+# -------------------------------------------------------------------------
+# database.py
+
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+
+# -------------------------------------------------------------------------
+# src/models/person.py
+
+from src.database import db
+
+class Person(db.Model):
+    __tablename__ = 'person'
+
+    idperson = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    password = db.Column(db.String(255), nullable=False)
+    email = db.Column(db.String(100), unique=True, nullable=False)
+    address = db.Column(db.String(255))
+    birthday = db.Column(db.Date)
+    typeuser = db.Column(db.String(50), nullable=False)
+    rg = db.Column(db.String(20))
+    cpf = db.Column(db.String(11), unique=True)
+
+    comments = db.relationship('Comment', backref='person', lazy=True)
+
+# -------------------------------------------------------------------------
+# src/models/person.py
+
+from src.database import db
+
+class Person(db.Model):
+    __tablename__ = 'person'
+
+    idperson = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    password = db.Column(db.String(255), nullable=False)
+    email = db.Column(db.String(100), unique=True, nullable=False)
+    address = db.Column(db.String(255))
+    birthday = db.Column(db.Date)
+    typeuser = db.Column(db.String(50), nullable=False)
+    rg = db.Column(db.String(20))
+    cpf = db.Column(db.String(11), unique=True)
+
+    comments = db.relationship('Comment', backref='person', lazy=True)
+
+# -------------------------------------------------------------------------
+# src/models/product.py
+
+
+from src.database import db
+
+class Product(db.Model):
+    __tablename__ = 'product'
+
+    idproduct = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    price = db.Column(db.Float, nullable=False)
+    description = db.Column(db.Text)
+    weight = db.Column(db.Float)
+    brand = db.Column(db.String(100))
+    expiration = db.Column(db.Date)
+
+    comments = db.relationship('Comment', backref='product', lazy=True)
+
+# -------------------------------------------------------------------------
+# src/models/comment.py
+
+from src.database import db
+from datetime import datetime
+
+class Comment(db.Model):
+    __tablename__ = 'comment'
+
+    idcomment = db.Column(db.Integer, primary_key=True)
+    person_id = db.Column(db.Integer, db.ForeignKey('person.idperson'), nullable=False)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.idproduct'), nullable=False)
+    comment = db.Column(db.Text, nullable=False)
+    score = db.Column(db.Integer, nullable=False)
+    date_time = db.Column(db.DateTime, default=datetime.utcnow)
+
+# -------------------------------------------------------------------------
+# src/repositories/person_repository.py
+
+from src.models.person import Person
+from src.database import db
+
+class PersonRepository:
+    @staticmethod
+    def create(data):
+        person = Person(**data)
+        db.session.add(person)
+        db.session.commit()
+        return person
+
+    @staticmethod
+    def get_by_email(email):
+        return Person.query.filter_by(email=email).first()
+
+    @staticmethod
+    def get_by_id(person_id):
+        return Person.query.get(person_id)
+
+    @staticmethod
+    def update(person_id, data):
+        person = Person.query.get(person_id)
+        if person:
+            for key, value in data.items():
+                setattr(person, key, value)
+            db.session.commit()
+        return person
+
+    @staticmethod
+    def delete(person_id):
+        person = Person.query.get(person_id)
+        if person:
+            db.session.delete(person)
+            db.session.commit()
+        return person
+
+# -------------------------------------------------------------------------
+# src/use_cases/person_usecase.py
+
+from src.repositories.person_repository import PersonRepository
+from werkzeug.security import generate_password_hash, check_password_hash
+
+class PersonUseCase:
+    @staticmethod
+    def create_person(data):
+        data['password'] = generate_password_hash(data['password'])
+        return PersonRepository.create(data)
+
+    @staticmethod
+    def login(email, password):
+        person = PersonRepository.get_by_email(email)
+        if person and check_password_hash(person.password, password):
+            return person
+        return None
+
+# -------------------------------------------------------------------------
+# src/auth/jwt_handler.py
+
+import jwt
+from datetime import datetime, timedelta
+from flask import current_app
+
+def create_token(person):
+    payload = {
+        'id': person.idperson,
+        'exp': datetime.utcnow() + timedelta(hours=2)
+    }
+    return jwt.encode(payload, current_app.config['SECRET_KEY'], algorithm='HS256')
+
+def decode_token(token):
+    try:
+        return jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=['HS256'])
+    except jwt.ExpiredSignatureError:
+        return None
+
+# -------------------------------------------------------------------------
+# src/routes/person_routes.py
+
+from flask import Blueprint, request, jsonify
+from src.use_cases.person_usecase import PersonUseCase
+from src.repositories.person_repository import PersonRepository
+from src.auth.jwt_handler import decode_token
+
+person_bp = Blueprint('person', __name__)
+
+# Rota para criar uma pessoa
+@person_bp.route('/', methods=['POST'])
+def create_person():
+    data = request.get_json()
+    person = PersonUseCase.create_person(data)
+    return jsonify({'message': 'Person created successfully', 'id': person.idperson}), 201
+
+# Rota para obter uma pessoa por ID
+@person_bp.route('/<int:person_id>', methods=['GET'])
+def get_person(person_id):
+    person = PersonRepository.get_by_id(person_id)
+    if not person:
+        return jsonify({'message': 'Person not found'}), 404
+    return jsonify({
+        'id': person.idperson,
+        'name': person.name,
+        'email': person.email,
+        'address': person.address,
+        'birthday': person.birthday,
+        'typeuser': person.typeuser,
+        'rg': person.rg,
+        'cpf': person.cpf
+    })
+
+# Rota para atualizar uma pessoa
+@person_bp.route('/<int:person_id>', methods=['PUT'])
+def update_person(person_id):
+    data = request.get_json()
+    person = PersonRepository.update(person_id, data)
+    if not person:
+        return jsonify({'message': 'Person not found'}), 404
+    return jsonify({'message': 'Person updated successfully'})
+
+# Rota para deletar uma pessoa
+@person_bp.route('/<int:person_id>', methods=['DELETE'])
+def delete_person(person_id):
+    person = PersonRepository.delete(person_id)
+    if not person:
+        return jsonify({'message': 'Person not found'}), 404
+    return jsonify({'message': 'Person deleted successfully'})
+
+# -------------------------------------------------------------------------
+# src/routes/product_routes.py
+
+from flask import Blueprint, request, jsonify
+from src.repositories.product_repository import ProductRepository
+
+product_bp = Blueprint('product', __name__)
+
+# Rota para criar um produto
+@product_bp.route('/', methods=['POST'])
+def create_product():
+    data = request.get_json()
+    product = ProductRepository.create(data)
+    return jsonify({'message': 'Product created successfully', 'id': product.idproduct}), 201
+
+# Rota para listar todos os produtos
+@product_bp.route('/', methods=['GET'])
+def list_products():
+    products = ProductRepository.get_all()
+    return jsonify([
+        {
+            'id': p.idproduct,
+            'name': p.name,
+            'price': p.price,
+            'description': p.description,
+            'weight': p.weight,
+            'brand': p.brand,
+            'expiration': p.expiration
+        }
+        for p in products
+    ])
+
+# Rota para obter um produto por ID
+@product_bp.route('/<int:product_id>', methods=['GET'])
+def get_product(product_id):
+    product = ProductRepository.get_by_id(product_id)
+    if not product:
+        return jsonify({'message': 'Product not found'}), 404
+    return jsonify({
+        'id': product.idproduct,
+        'name': product.name,
+        'price': product.price,
+        'description': product.description,
+        'weight': product.weight,
+        'brand': product.brand,
+        'expiration': product.expiration
+    })
+
+# Rota para atualizar um produto
+@product_bp.route('/<int:product_id>', methods=['PUT'])
+def update_product(product_id):
+    data = request.get_json()
+    product = ProductRepository.update(product_id, data)
+    if not product:
+        return jsonify({'message': 'Product not found'}), 404
+    return jsonify({'message': 'Product updated successfully'})
+
+# Rota para deletar um produto
+@product_bp.route('/<int:product_id>', methods=['DELETE'])
+def delete_product(product_id):
+    product = ProductRepository.delete(product_id)
+    if not product:
+        return jsonify({'message': 'Product not found'}), 404
+    return jsonify({'message': 'Product deleted successfully'})
+
+
+# -------------------------------------------------------------------------
+# src/repositories/product_repository.py
+
+from src.models.product import Product
+from src.database import db
+
+class ProductRepository:
+    @staticmethod
+    def create(data):
+        product = Product(**data)
+        db.session.add(product)
+        db.session.commit()
+        return product
+
+    @staticmethod
+    def get_all():
+        return Product.query.all()
+
+    @staticmethod
+    def get_by_id(product_id):
+        return Product.query.get(product_id)
+
+    @staticmethod
+    def update(product_id, data):
+        product = Product.query.get(product_id)
+        if product:
+            for key, value in data.items():
+                setattr(product, key, value)
+            db.session.commit()
+        return product
+
+    @staticmethod
+    def delete(product_id):
+        product = Product.query.get(product_id)
+        if product:
+            db.session.delete(product)
+            db.session.commit()
+        return product
+
+
+# -------------------------------------------------------------------------
+# src/repositories/comment_repository.py
+
+from src.models.comment import Comment
+from src.database import db
+
+class CommentRepository:
+    @staticmethod
+    def create(data):
+        comment = Comment(**data)
+        db.session.add(comment)
+        db.session.commit()
+        return comment
+
+    @staticmethod
+    def get_by_product(product_id):
+        return Comment.query.filter_by(product_id=product_id).all()
+
+    @staticmethod
+    def delete(comment_id):
+        comment = Comment.query.get(comment_id)
+        if comment:
+            db.session.delete(comment)
+            db.session.commit()
+        return comment
+
+
+
+
+
+
+
+
+
+
+
+
+
